@@ -1,0 +1,344 @@
+Client meeting notes
+-Theory: Among teammates born in the same year, the oldest (earliest-born) player tends to be physically bigger than peers, which boosts confidence and leads to genuinely better performance
+-Client's ask: Test this theory statistically 
+-Subject: Canadian hockey players born within the same year
+-Outcome variable: Whether the player made it into the NHL / whether the pattern differs by year
+-Main predictor: Birth month
+-What to look at: Distribution of how many players were born in each month
+-Potential confound: The general population itself has more births in January / early in the year, so this could create a false pattern unrelated to the theory — need to account for this baseline
+-Scope: Canadian players only
+-Data: Two Excel tables sharing player_id, but not the exact same set of players
+-Additional hypothesis: Client thinks birth month might relate to height
+-Additional question: Whether birth province matters
+-Note: Making the NHL itself is already a very high bar  
+
+
+
+## Stage 2: Make an analysis plan
+- [ ] What model/test/technique you plan to use.
+
+$$\chi^2 = \sum \frac{(observed - expected)^2}{expected}$$
+
+
+- [ ] A justification for that choice. This should consist of: 
+(a) the probabilistic model you think describes the data
+:Assumed a Multinomial distribution.
+ 1. NHL Birth-Month Distribution vs Canadian population(average bm Distribution)
+ 2. year-matched birth-month distribution -> conclusion consistent   
+
+(b) any simplifications of the model you are imposing to do your test/estimate parameters
+:full-period(1991–2022) average birth-month data 
+
+(c) justifications of the simplifications.
+:Assumed birth-month pattern stable over time
+
+
+
+#Stage3
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+
+
+#- [ ] Get the data on your computer.
+```{r}
+data_cbirth <- read.csv(r"(C:\Users/hidy0/Desktop/consultation/Roster/canada_births_1991_2022.csv)")
+data_cbirth
+data_pbirth <- read.csv(r"(C:/Users/hidy0/Desktop/consultation/Roster/nhl_player_births.csv)")
+data_pbirth
+
+```
+
+
+
+#- [ ] Do quality checks (make sure it looks like what the client said it should).
+- Filter for Canadian players only 
+-Check for missing values 
+```{r}
+data_pbirth_can <- data_pbirth[data_pbirth$birth_country == "CAN",]
+nrow(data_pbirth_can)
+
+sum(is.na(data_pbirth_can$birth_year))
+sum(is.na(data_pbirth_can$birth_month))
+
+sum(is.na(data_cbirth$year))
+sum(is.na(data_cbirth$month))
+sum(is.na(data_cbirth$births))
+
+```
+
+
+
+Don't cover the same time period
+-Overlapping period: 91-2005 
+```{r}
+#full dataset 
+table(data_cbirth$year)
+table(data_cbirth$month)
+
+table(data_pbirth_can$birth_year)
+table(data_pbirth_can$birth_month)
+```
+
+
+
+Visual comparison
+```{r}
+prop.table(tapply(data_cbirth$births, data_cbirth$month, sum))
+prop.table(table(data_pbirth_can$birth_month))
+```
+ 
+
+ 
+#- [ ] Get the data into the correct format for the function(s) you are going to use to fit the model.
+
+Analysis1: using the average birth-month distribution
+
+- Expected = total number of players × *the overall proportion*
+- Observed = the actual number of NHL players for each month (across all years)
+```{r}
+observed <- table(data_pbirth_can$birth_month)
+expected <- prop.table(tapply(data_cbirth$births, data_cbirth$month, sum))
+
+chisq.test(observed, p=expected)
+```
+
+H0: NHL bm distribution = Canada bm distribution
+
+
+
+
+
+Check: monthly birth proportions are stable across years
+```{r}
+cbirth_prop <- data_cbirth %>%
+  group_by(year) %>%
+  mutate(prop = births / sum(births))
+
+ggplot(cbirth_prop,
+       aes(year, prop, group=month, color = factor(month))) +
+       geom_line() +
+         labs(x = "year", y = "Proportion", color = "month")
+
+year_month_table <- xtabs(births ~ year + month, data_cbirth)
+chisq.test(year_month_table)
+```
+
+-> Canadian birth-month pattern was not exactly the same every year
+(= the proportion of babies born each month in Canada can vary from year to year) 
+
+
+ 
+---------------------------------------------------------- 
+
+
+
+Analysis2: overlapping years(91-2005) -> using year-matched birth distributions
+- Expected = that year's total number of players × *that year's Canadian birth proportion*
+- Observed = the actual number of NHL players for each year and month.
+```{r}
+#91-2005 Candanian
+exact_cbirth <- data_cbirth[data_cbirth$year >= 1991 
+                            & data_cbirth$year <= 2005, ]
+
+#Canadian bm proportions 
+exact_cbirth_prop <- exact_cbirth %>%
+  group_by(year) %>%
+  mutate(prop = births / sum(births))
+
+#91-2005 Candanian players
+exact_pbirth <- data_pbirth_can[data_pbirth_can$birth_year>= 1991 & data_pbirth_can$birth_year <= 2005, ]
+
+#Canadian player monthly birth proportions 
+exact_pbirth_count <- exact_pbirth %>%
+  group_by(birth_year, birth_month) %>%
+  summarise(observed = n(), .groups = "drop") %>%
+  complete(birth_year = 1991:2005, birth_month = 1:12, fill = list(observed = 0))
+
+exact_pbirth_merge <- exact_pbirth_count %>%
+  left_join(exact_cbirth_prop, by = c("birth_year"="year",
+                                      "birth_month"="month"))
+
+head(exact_pbirth_merge)
+```
+
+Intermediate table: NHL counts & Canadian birth proportions 
+
+
+
+
+```{r}
+# number of players per year 
+year_totals <- tapply(exact_pbirth_merge$observed, exact_pbirth_merge$birth_year, sum)
+
+exact_pbirth_merge$n_i <- year_totals[as.character(exact_pbirth_merge$birth_year)]
+
+#expected count 
+exact_pbirth_merge$expected_ij <- exact_pbirth_merge$n_i * exact_pbirth_merge$prop
+
+
+#chi
+observed_by_month <- tapply(exact_pbirth_merge$observed, exact_pbirth_merge$birth_month, sum)
+expected_by_month <- tapply(exact_pbirth_merge$expected_ij, exact_pbirth_merge$birth_month, sum)
+
+chisq.test(observed_by_month, p = expected_by_month / sum(expected_by_month))
+```
+H0: NHL distribution = Canada distribution
+
+Both analyses -> NHL distribution ≠ Canadian distribution (theory) 
+
+
+
+
+
+
+First method (average proportion)
+
+*Residual = Observed−Expected 
+```{r}
+observed <- table(data_pbirth_can$birth_month)
+expected_p <- prop.table(tapply(data_cbirth$births, data_cbirth$month, sum))
+result <- chisq.test(observed, p = expected_p)
+
+sort( result$stdres, decreasing=TRUE)
+```
+Players born earlier in the year are more common in the NHL than expected.
+
+
+
+
+
+```{r}
+stdres_table <- data.frame(month = as.numeric(names(result$stdres)),
+                           stdres = as.numeric(result$stdres))
+
+ggplot(stdres_table, aes(x=factor(month), y = stdres)) +
+  geom_col() 
+```
+
+
+
+
+Check: downward trend  
+
+```{r}
+observed_by_month <- as.numeric(table(data_pbirth_can$birth_month))
+expected_p <- as.numeric(prop.table(tapply(data_cbirth$births, data_cbirth$month, sum)))
+n_total <- sum(observed_by_month)
+
+prop.trend.test(observed_by_month, rep(n_total, 12), score = 1:12)
+```
+H0: no consistent trend in the monthly proportion
+ 
+ 
+Result: NHL players were more likely to be born earlier in the year, and less likely to born later in the year. 
+-> theory 
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+
+## Stage 2: Make an analysis plan
+
+  
+- [ ] What model/test/technique you plan to use.
+linear regression 
+
+ 
+## Stage 3: Perform the analysis
+
+- [ ] Get the data on your computer.
+```{r}
+data_roster <- read.csv(r"(C:/Users/hidy0/Desktop/consultation/Roster/nhl_rosters.csv)")
+data_roster
+```
+
+- [ ] Do quality checks 
+Duplicates in the roster-> removed 
+```{r}
+data_roster_canada <- data_roster[data_roster$birth_country == "CAN",]
+
+data_roster_can <- data_roster_canada[!duplicated(data_roster_canada$player_id),]
+
+nrow(data_pbirth_can)
+nrow(data_roster_can)
+```
+ 
+
+height & birth date 
+```{r}
+sum(is.na(data_roster_can$height_in_centimeters))
+sum(is.na(data_roster_can$birth_date))
+```
+
+```{r}
+data_roster_can <- data_roster_can[!is.na(data_roster_can$height_in_centimeters), ]
+
+nrow(data_roster_can)
+```
+
+ 
+ 
+- [ ] Get the data into the correct format for the function(s) you are going to use to fit the model.
+
+:birth_date format is inconsistent -> 160 NA 
+```{r}
+data_roster_can$birth_month <- as.numeric(format(as.Date(data_roster_can$birth_date,
+format = "%m/%d/%Y"), "%m"))
+
+#Birth month gets split into quarters 
+data_roster_can$birth_quarter <- cut(data_roster_can$birth_month,
+    breaks = c(0, 3, 6, 9, 12),
+    labels = c("Q1", "Q2", "Q3", "Q4"))
+
+height_quarter_data <- data_roster_can[, c("height_in_centimeters", "birth_quarter")]
+
+height_quarter_data 
+colSums(is.na(height_quarter_data))
+```
+
+```{r}
+height_quarter_data <- height_quarter_data[!is.na(height_quarter_data$birth_quarter), ]
+```
+
+
+
+
+- [ ] Fit the model, get the number(s) you need from the output.
+```{r}
+model_h <- lm(height_in_centimeters ~ birth_quarter, height_quarter_data)
+summary(model_h)
+```
+- Q4 is 0.57 shorter than Q1: (statistically significant)
+- R² = 0.2% 
+
+= Birth quarter explains very little of the height difference
+
+
+
+
+Check regression assumptions
+```{r}
+plot(model_h)
+```
+
+
+
+
+
+ 
+ 
